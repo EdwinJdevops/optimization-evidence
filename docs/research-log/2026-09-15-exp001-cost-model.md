@@ -21,7 +21,7 @@ AWS Price List API results for gp3 in US East (N. Virginia): **USD 0.08 per GB-m
 
 AWS Price List API results for an in-use public IPv4 address in US East (N. Virginia): **USD 0.005 per address-hour**.
 
-The account currently has no IAM OpenID Connect providers. If the experiment uses GitHub Actions OIDC, the provider must therefore be created deliberately and removed with the experiment stack.
+AWS Price List API results for CodeBuild `general1.small` Linux On-Demand in US East (N. Virginia): **USD 0.005 per build minute**. The catalog record used for this verification was published 2026-09-11.
 
 The account's EKS service quota currently permits 100 clusters and 30 managed node groups per cluster, so EXP-001 does not require a quota increase.
 
@@ -35,6 +35,7 @@ The account's EKS service quota currently permits 100 clusters and 30 managed no
 - no NAT Gateway
 - no load balancer required for the synthetic workload
 - no EKS control-plane log export by default; experiment evidence is collected explicitly
+- 1 idle CodeBuild project whose `general1.small` runner exists only while a phase is executing
 
 ## Forecast calculation
 
@@ -77,6 +78,20 @@ Forecast worker-removal delta:
 
 That delta is only a **forecast**. EXP-001 must not call it realized savings. The billable result is evaluated later from CUR 2.0 resource-level records and must survive the attribution rules in the evidence state machine.
 
+## Experiment-runner cost
+
+The CodeBuild project has no continuously running build host. A runner is created only while a build is executing. At the verified `general1.small` rate:
+
+```text
+5 minute phase  = 0.025 USD
+10 minute phase = 0.050 USD
+20 minute phase = 0.100 USD
+```
+
+A baseline phase, Arm A phase, and Arm B phase that each consumed ten billed minutes would therefore add approximately **USD 0.15** of CodeBuild compute. This is a forecast, not a claim about actual billed build duration.
+
+CodeBuild is intentionally kept outside the worker-capacity savings calculation. It is experiment-control overhead, not the resource being optimized.
+
 ## Time envelope
 
 If the lab accidentally stayed in the two-worker baseline state for the entire period, the modeled core infrastructure exposure would be approximately:
@@ -87,7 +102,7 @@ If the lab accidentally stayed in the two-worker baseline state for the entire p
 | 12 hours | USD 2.37 |
 | 24 hours | USD 4.74 |
 
-These figures exclude variable data transfer, container-registry traffic, possible CloudWatch usage, taxes, and any service pricing not listed above. They are therefore planning bounds for the known core resources, not invoices.
+These figures exclude CodeBuild phase minutes, variable data transfer, container-registry traffic, possible CloudWatch usage, taxes, and any service pricing not listed above. They are therefore planning bounds for the known continuously running core resources, not invoices.
 
 The separate AWS Budget `optimization-evidence-exp-001` remains a **USD 20 monthly alert guardrail**, not an allowed burn target and not an automatic shutdown mechanism. ACTUAL-cost notifications are configured at 50%, 80%, and 100%.
 
@@ -99,9 +114,10 @@ Hard engineering behavior:
 
 1. Do not create a NAT Gateway.
 2. Do not use Spot for EXP-001; an interruption would contaminate node-removal attribution.
-3. Do not leave the EKS experiment stack running for convenience after the operational evidence is captured.
-4. If the experiment cannot identify the exact managed node group, EC2 instance IDs, timestamps, and mutation cause, stop rather than collect ambiguous evidence.
-5. Delete the experiment stack after Kubernetes/EC2/Auto Scaling evidence is persisted. Keep the separate billing-foundation stack so delayed CUR 2.0 records can be correlated later.
+3. Use the smallest CodeBuild class that can reliably run the orchestration (`general1.small`).
+4. Do not leave the EKS experiment stack running for convenience after the operational evidence is captured.
+5. If the experiment cannot identify the exact managed node group, EC2 instance IDs, timestamps, and mutation cause, stop rather than collect ambiguous evidence.
+6. Delete the experiment stack after Kubernetes/EC2/Auto Scaling evidence is persisted. Keep the separate billing-foundation stack so delayed CUR 2.0 records can be correlated later.
 
 ## Claim boundary
 
