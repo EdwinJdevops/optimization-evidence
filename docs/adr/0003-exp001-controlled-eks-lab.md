@@ -16,12 +16,15 @@ Use one short-lived Amazon EKS cluster in `us-east-1` with the following fixed b
 - Kubernetes `1.36`, which AWS currently reports as the default EKS version and in standard support.
 - One EKS managed node group using `t3.medium`, On-Demand capacity, 20 GiB gp3 root volumes, minimum 1, desired 2, maximum 2.
 - Two public subnets in separate Availability Zones, an Internet Gateway, and no NAT Gateway.
-- Public and private EKS API endpoints enabled. The public endpoint exists only so the controlled GitHub Actions experiment runner can authenticate; Kubernetes authentication and the experiment-specific AWS role still gate access.
+- Public and private EKS API endpoints enabled. The public endpoint exists so an ephemeral AWS CodeBuild experiment runner can authenticate without introducing a NAT Gateway or a persistent bastion. Kubernetes authentication still gates access.
 - No EC2 SSH key and no EKS node-group remote access configuration.
 - Kubernetes Cluster Autoscaler `v1.36.0`, pinned to the upstream release that matches the cluster minor version.
-- Cluster Autoscaler AWS permissions are isolated to autoscaling groups carrying the standard Cluster Autoscaler discovery tags for this cluster.
-- EKS Pod Identity is preferred for the in-cluster autoscaler role so the experiment does not need a second cluster-specific IRSA OIDC provider.
-- The account-level GitHub Actions OIDC provider and an experiment-scoped workflow role live in the experiment stack and are removed during teardown. The trust policy is limited to `EdwinJdevops/optimization-evidence` on `main`.
+- Cluster Autoscaler AWS permissions are isolated to Auto Scaling groups carrying the standard Cluster Autoscaler discovery tags for this cluster.
+- EKS Pod Identity is used for the in-cluster autoscaler role.
+- Experiment orchestration runs in AWS CodeBuild using `BUILD_GENERAL1_SMALL`, `aws/codebuild/standard:8.0`, no privileged mode, and a short timeout. The runner is ephemeral: the project itself is idle when no build is running.
+- The CodeBuild service role can mutate Kubernetes through an EKS access entry, but it cannot directly resize the EC2 Auto Scaling group. Direct worker-capacity mutation remains isolated to the Cluster Autoscaler role. This preserves the causal boundary of Arm B.
+- The CodeBuild role may read EKS, EC2, and Auto Scaling state and write raw experiment evidence only under the EXP-001 prefix of the retained evidence bucket.
+- Each build checks out an exact repository commit SHA before executing the experiment harness. The build does not execute mutable branch contents by name.
 
 All experiment resources carry:
 
@@ -50,6 +53,14 @@ Karpenter is a strong production option, but EXP-001 only needs one managed node
 
 Cluster Autoscaler directly changes the desired capacity of the known managed node group, which gives us a narrow mutation surface and a simple chain of evidence.
 
+## Why CodeBuild instead of a persistent runner or GitHub-hosted runner
+
+A persistent EC2 runner would add another continuously billed instance and public IPv4 address to the experiment. A GitHub-hosted runner would require a repository-level OIDC role reference or repository secret/variable management outside the current AWS-native experiment boundary.
+
+CodeBuild gives us an ephemeral AWS-native command runner that can be started and inspected through AWS APIs, can be represented in the same CloudFormation stack, and can use an EKS access entry tied directly to its service role. Current AWS Price List data for `general1.small` in us-east-1 is USD 0.005 per build minute. A ten-minute build is therefore approximately USD 0.05 before any unrelated service charges.
+
+The runner role intentionally has no `autoscaling:SetDesiredCapacity` or `autoscaling:TerminateInstanceInAutoScalingGroup` permission. If capacity changes during Arm B, the AWS-side actor should be the Cluster Autoscaler role rather than the orchestration runner.
+
 ## Why no NAT Gateway
 
 A NAT Gateway has a fixed hourly charge and data-processing charges that do not help this experiment. Workers instead run in public subnets with public IPv4 addresses and no inbound SSH. Current AWS price-catalog data for us-east-1 shows USD 0.005/hour per in-use public IPv4 address. For a two-node, short-duration lab, that is materially cheaper than introducing a NAT Gateway.
@@ -73,9 +84,13 @@ A Kubernetes-success signal alone is never sufficient for `REALIZED`.
 - EKS Auto Mode: adds a separately priced management mechanism and changes the capacity-control path.
 - NAT Gateway: avoidable fixed cost.
 - Direct SSH access: unnecessary and contrary to the experiment's minimum-access requirement.
+- Persistent EC2 experiment runner: adds continuously billed capacity and another attribution exclusion.
+- GitHub-hosted execution for EXP-001: workable, but less directly automatable through the connected AWS control plane than an ephemeral CodeBuild runner and would add an external OIDC credential path.
 
 ## Consequences
 
-The lab is not a recommendation for every production EKS architecture. Public worker subnets and a public API endpoint are deliberate short-lived experiment choices made to minimize cost and enable a controlled hosted runner. Production guidance must not be inferred from this ADR.
+The lab is not a recommendation for every production EKS architecture. Public worker subnets and a public API endpoint are deliberate short-lived experiment choices made to minimize cost and enable the ephemeral runner. Production guidance must not be inferred from this ADR.
+
+The public EKS endpoint is not treated as sufficient authorization; EKS authentication and the access entry remain required. The runner and autoscaler have separate roles so orchestration and capacity mutation do not share the same AWS permissions.
 
 The experiment must be torn down immediately after operational evidence is captured. Billing evidence can arrive later because the CUR 2.0 export is maintained by the separate retained billing-foundation stack.
