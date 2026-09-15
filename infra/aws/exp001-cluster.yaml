@@ -1,0 +1,432 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Short-lived, cost-bounded EKS lab for optimization-evidence EXP-001.
+  Creates no NAT Gateway and no SSH access.
+
+Parameters:
+  ClusterName:
+    Type: String
+    Default: optimization-evidence-exp001
+    AllowedPattern: '^[A-Za-z0-9][A-Za-z0-9-_]*$'
+  KubernetesVersion:
+    Type: String
+    Default: '1.36'
+    AllowedValues:
+      - '1.36'
+  NodeInstanceType:
+    Type: String
+    Default: t3.medium
+    AllowedValues:
+      - t3.medium
+  NodeDiskSizeGiB:
+    Type: Number
+    Default: 20
+    MinValue: 20
+    MaxValue: 20
+  EvidenceBucketName:
+    Type: String
+    Description: Existing retained evidence bucket from optimization-evidence-billing-foundation.
+  GitHubOwner:
+    Type: String
+    Default: EdwinJdevops
+  GitHubRepository:
+    Type: String
+    Default: optimization-evidence
+  GitHubBranch:
+    Type: String
+    Default: main
+
+Resources:
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.70.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${ClusterName}-vpc'
+        - Key: Project
+          Value: optimization-evidence
+        - Key: Experiment
+          Value: EXP-001
+        - Key: Environment
+          Value: research
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub '${ClusterName}-igw'
+        - Key: Project
+          Value: optimization-evidence
+        - Key: Experiment
+          Value: EXP-001
+        - Key: Environment
+          Value: research
+
+  VpcGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [0, !GetAZs '']
+      CidrBlock: 10.70.0.0/20
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${ClusterName}-public-a'
+        - Key: kubernetes.io/role/elb
+          Value: '1'
+        - Key: Project
+          Value: optimization-evidence
+        - Key: Experiment
+          Value: EXP-001
+        - Key: Environment
+          Value: research
+
+  PublicSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [1, !GetAZs '']
+      CidrBlock: 10.70.16.0/20
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${ClusterName}-public-b'
+        - Key: kubernetes.io/role/elb
+          Value: '1'
+        - Key: Project
+          Value: optimization-evidence
+        - Key: Experiment
+          Value: EXP-001
+        - Key: Environment
+          Value: research
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: !Sub '${ClusterName}-public'
+        - Key: Project
+          Value: optimization-evidence
+        - Key: Experiment
+          Value: EXP-001
+        - Key: Environment
+          Value: research
+
+  PublicDefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: VpcGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetARouteAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnetA
+
+  PublicSubnetBRouteAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnetB
+
+  EksClusterRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: eks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonEKSClusterPolicy
+      Tags:
+        - Key: Project
+          Value: optimization-evidence
+        - Key: Experiment
+          Value: EXP-001
+        - Key: Environment
+          Value: research
+
+  EksCluster:
+    Type: AWS::EKS::Cluster
+    Properties:
+      Name: !Ref ClusterName
+      Version: !Ref KubernetesVersion
+      RoleArn: !GetAtt EksClusterRole.Arn
+      AccessConfig:
+        AuthenticationMode: API_AND_CONFIG_MAP
+        BootstrapClusterCreatorAdminPermissions: true
+      ResourcesVpcConfig:
+        EndpointPrivateAccess: true
+        EndpointPublicAccess: true
+        PublicAccessCidrs:
+          - 0.0.0.0/0
+        SubnetIds:
+          - !Ref PublicSubnetA
+          - !Ref PublicSubnetB
+      Tags:
+        - Key: Project
+          Value: optimization-evidence
+        - Key: Experiment
+          Value: EXP-001
+        - Key: Environment
+          Value: research
+
+  EksNodeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy
+        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPullOnly
+        - arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy
+      Tags:
+        - Key: Project
+          Value: optimization-evidence
+        - Key: Experiment
+          Value: EXP-001
+        - Key: Environment
+          Value: research
+
+  EksNodeGroup:
+    Type: AWS::EKS::Nodegroup
+    DependsOn:
+      - PublicDefaultRoute
+      - PublicSubnetARouteAssociation
+      - PublicSubnetBRouteAssociation
+    Properties:
+      ClusterName: !Ref EksCluster
+      NodegroupName: !Sub '${ClusterName}-workers'
+      NodeRole: !GetAtt EksNodeRole.Arn
+      AmiType: AL2023_x86_64_STANDARD
+      CapacityType: ON_DEMAND
+      DiskSize: !Ref NodeDiskSizeGiB
+      InstanceTypes:
+        - !Ref NodeInstanceType
+      Subnets:
+        - !Ref PublicSubnetA
+        - !Ref PublicSubnetB
+      ScalingConfig:
+        MinSize: 1
+        DesiredSize: 2
+        MaxSize: 2
+      UpdateConfig:
+        MaxUnavailable: 1
+      Labels:
+        experiment: exp001
+      Tags:
+        Project: optimization-evidence
+        Experiment: EXP-001
+        Environment: research
+
+  PodIdentityAgentAddon:
+    Type: AWS::EKS::Addon
+    DependsOn: EksNodeGroup
+    Properties:
+      ClusterName: !Ref EksCluster
+      AddonName: eks-pod-identity-agent
+      Tags:
+        - Key: Project
+          Value: optimization-evidence
+        - Key: Experiment
+          Value: EXP-001
+        - Key: Environment
+          Value: research
+
+  ClusterAutoscalerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: pods.eks.amazonaws.com
+            Action:
+              - sts:AssumeRole
+              - sts:TagSession
+      Policies:
+        - PolicyName: cluster-autoscaler-exp001
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: MutateOnlyExp001AutoscalingGroups
+                Effect: Allow
+                Action:
+                  - autoscaling:SetDesiredCapacity
+                  - autoscaling:TerminateInstanceInAutoScalingGroup
+                Resource: '*'
+                Condition:
+                  StringEquals:
+                    'aws:ResourceTag/k8s.io/cluster-autoscaler/enabled': 'true'
+                    'aws:ResourceTag/k8s.io/cluster-autoscaler/optimization-evidence-exp001': owned
+              - Sid: ReadAutoscalingAndInstanceMetadata
+                Effect: Allow
+                Action:
+                  - autoscaling:DescribeAutoScalingGroups
+                  - autoscaling:DescribeAutoScalingInstances
+                  - autoscaling:DescribeLaunchConfigurations
+                  - autoscaling:DescribeScalingActivities
+                  - autoscaling:DescribeTags
+                  - ec2:DescribeImages
+                  - ec2:DescribeInstanceTypes
+                  - ec2:DescribeLaunchTemplateVersions
+                  - ec2:GetInstanceTypesFromInstanceRequirements
+                  - eks:DescribeNodegroup
+                Resource: '*'
+      Tags:
+        - Key: Project
+          Value: optimization-evidence
+        - Key: Experiment
+          Value: EXP-001
+        - Key: Environment
+          Value: research
+
+  ClusterAutoscalerPodIdentity:
+    Type: AWS::EKS::PodIdentityAssociation
+    DependsOn: PodIdentityAgentAddon
+    Properties:
+      ClusterName: !Ref EksCluster
+      Namespace: kube-system
+      ServiceAccount: cluster-autoscaler
+      RoleArn: !GetAtt ClusterAutoscalerRole.Arn
+      Tags:
+        - Key: Project
+          Value: optimization-evidence
+        - Key: Experiment
+          Value: EXP-001
+        - Key: Environment
+          Value: research
+
+  GitHubOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList:
+        - sts.amazonaws.com
+      Tags:
+        - Key: Project
+          Value: optimization-evidence
+        - Key: Experiment
+          Value: EXP-001
+        - Key: Environment
+          Value: research
+
+  GitHubExperimentRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: optimization-evidence-exp001-github
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Ref GitHubOidcProvider
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                'token.actions.githubusercontent.com:aud': sts.amazonaws.com
+              StringLike:
+                'token.actions.githubusercontent.com:sub': !Sub 'repo:${GitHubOwner}/${GitHubRepository}:ref:refs/heads/${GitHubBranch}'
+      Policies:
+        - PolicyName: exp001-runner
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: DescribeExperimentCluster
+                Effect: Allow
+                Action:
+                  - eks:DescribeCluster
+                  - eks:DescribeNodegroup
+                Resource:
+                  - !GetAtt EksCluster.Arn
+                  - !Sub 'arn:${AWS::Partition}:eks:${AWS::Region}:${AWS::AccountId}:nodegroup/${ClusterName}/*/*'
+              - Sid: ReadExperimentEc2AndAutoscalingState
+                Effect: Allow
+                Action:
+                  - ec2:DescribeInstances
+                  - ec2:DescribeVolumes
+                  - ec2:DescribeTags
+                  - autoscaling:DescribeAutoScalingGroups
+                  - autoscaling:DescribeAutoScalingInstances
+                  - autoscaling:DescribeScalingActivities
+                  - autoscaling:DescribeTags
+                Resource: '*'
+              - Sid: WriteExperimentEvidence
+                Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                Resource: !Sub 'arn:${AWS::Partition}:s3:::${EvidenceBucketName}/experiments/EXP-001/*'
+              - Sid: ListExperimentEvidencePrefix
+                Effect: Allow
+                Action: s3:ListBucket
+                Resource: !Sub 'arn:${AWS::Partition}:s3:::${EvidenceBucketName}'
+                Condition:
+                  StringLike:
+                    s3:prefix:
+                      - experiments/EXP-001/*
+      Tags:
+        - Key: Project
+          Value: optimization-evidence
+        - Key: Experiment
+          Value: EXP-001
+        - Key: Environment
+          Value: research
+
+  GitHubEksAccessEntry:
+    Type: AWS::EKS::AccessEntry
+    Properties:
+      ClusterName: !Ref EksCluster
+      PrincipalArn: !GetAtt GitHubExperimentRole.Arn
+      Type: STANDARD
+      AccessPolicies:
+        - PolicyArn: arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy
+          AccessScope:
+            Type: cluster
+      Tags:
+        - Key: Project
+          Value: optimization-evidence
+        - Key: Experiment
+          Value: EXP-001
+        - Key: Environment
+          Value: research
+
+Outputs:
+  ClusterName:
+    Value: !Ref EksCluster
+  ClusterArn:
+    Value: !GetAtt EksCluster.Arn
+  NodeGroupName:
+    Value: !Ref EksNodeGroup
+  GitHubExperimentRoleArn:
+    Value: !GetAtt GitHubExperimentRole.Arn
+  PublicSubnetA:
+    Value: !Ref PublicSubnetA
+  PublicSubnetB:
+    Value: !Ref PublicSubnetB
+  VpcId:
+    Value: !Ref Vpc
