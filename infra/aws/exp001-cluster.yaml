@@ -26,15 +26,6 @@ Parameters:
   EvidenceBucketName:
     Type: String
     Description: Existing retained evidence bucket from optimization-evidence-billing-foundation.
-  GitHubOwner:
-    Type: String
-    Default: EdwinJdevops
-  GitHubRepository:
-    Type: String
-    Default: optimization-evidence
-  GitHubBranch:
-    Type: String
-    Default: main
 
 Resources:
   Vpc:
@@ -321,12 +312,11 @@ Resources:
         - Key: Environment
           Value: research
 
-  GitHubOidcProvider:
-    Type: AWS::IAM::OIDCProvider
+  ExperimentLogGroup:
+    Type: AWS::Logs::LogGroup
     Properties:
-      Url: https://token.actions.githubusercontent.com
-      ClientIdList:
-        - sts.amazonaws.com
+      LogGroupName: !Sub '/optimization-evidence/EXP-001/${ClusterName}/codebuild'
+      RetentionInDays: 1
       Tags:
         - Key: Project
           Value: optimization-evidence
@@ -335,22 +325,16 @@ Resources:
         - Key: Environment
           Value: research
 
-  GitHubExperimentRole:
+  CodeBuildExperimentRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: optimization-evidence-exp001-github
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
           - Effect: Allow
             Principal:
-              Federated: !Ref GitHubOidcProvider
-            Action: sts:AssumeRoleWithWebIdentity
-            Condition:
-              StringEquals:
-                'token.actions.githubusercontent.com:aud': sts.amazonaws.com
-              StringLike:
-                'token.actions.githubusercontent.com:sub': !Sub 'repo:${GitHubOwner}/${GitHubRepository}:ref:refs/heads/${GitHubBranch}'
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
       Policies:
         - PolicyName: exp001-runner
           PolicyDocument:
@@ -381,14 +365,22 @@ Resources:
                   - s3:PutObject
                   - s3:GetObject
                 Resource: !Sub 'arn:${AWS::Partition}:s3:::${EvidenceBucketName}/experiments/EXP-001/*'
-              - Sid: ListExperimentEvidencePrefix
+              - Sid: ReadEvidenceBucketMetadata
                 Effect: Allow
-                Action: s3:ListBucket
+                Action:
+                  - s3:GetBucketLocation
+                  - s3:ListBucket
                 Resource: !Sub 'arn:${AWS::Partition}:s3:::${EvidenceBucketName}'
                 Condition:
-                  StringLike:
+                  StringLikeIfExists:
                     s3:prefix:
                       - experiments/EXP-001/*
+              - Sid: WriteExperimentRunnerLogs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/optimization-evidence/EXP-001/${ClusterName}/codebuild:*'
       Tags:
         - Key: Project
           Value: optimization-evidence
@@ -397,16 +389,98 @@ Resources:
         - Key: Environment
           Value: research
 
-  GitHubEksAccessEntry:
+  CodeBuildEksAccessEntry:
     Type: AWS::EKS::AccessEntry
     Properties:
       ClusterName: !Ref EksCluster
-      PrincipalArn: !GetAtt GitHubExperimentRole.Arn
+      PrincipalArn: !GetAtt CodeBuildExperimentRole.Arn
       Type: STANDARD
       AccessPolicies:
         - PolicyArn: arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy
           AccessScope:
             Type: cluster
+      Tags:
+        - Key: Project
+          Value: optimization-evidence
+        - Key: Experiment
+          Value: EXP-001
+        - Key: Environment
+          Value: research
+
+  ExperimentRunnerProject:
+    Type: AWS::CodeBuild::Project
+    DependsOn:
+      - CodeBuildEksAccessEntry
+      - ExperimentLogGroup
+    Properties:
+      Name: !Sub '${ClusterName}-runner'
+      Description: Ephemeral orchestration runner for optimization-evidence EXP-001.
+      ServiceRole: !GetAtt CodeBuildExperimentRole.Arn
+      ConcurrentBuildLimit: 1
+      QueuedTimeoutInMinutes: 5
+      TimeoutInMinutes: 60
+      Artifacts:
+        Type: NO_ARTIFACTS
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/standard:8.0
+        ImagePullCredentialsType: CODEBUILD
+        PrivilegedMode: false
+        EnvironmentVariables:
+          - Name: CLUSTER_NAME
+            Type: PLAINTEXT
+            Value: !Ref ClusterName
+          - Name: NODEGROUP_NAME
+            Type: PLAINTEXT
+            Value: !Sub '${ClusterName}-workers'
+          - Name: EVIDENCE_BUCKET
+            Type: PLAINTEXT
+            Value: !Ref EvidenceBucketName
+          - Name: REPOSITORY_URL
+            Type: PLAINTEXT
+            Value: https://github.com/EdwinJdevops/optimization-evidence.git
+          - Name: REPO_SHA
+            Type: PLAINTEXT
+            Value: UNSET
+          - Name: PHASE
+            Type: PLAINTEXT
+            Value: snapshot
+      Source:
+        Type: NO_SOURCE
+        BuildSpec: |
+          version: 0.2
+          phases:
+            install:
+              commands:
+                - set -Eeuo pipefail
+                - '[[ "${REPO_SHA}" =~ ^[0-9a-f]{40}$ ]] || { echo "REPO_SHA must be an exact 40-character commit SHA" >&2; exit 64; }'
+                - 'case "${PHASE}" in baseline|arm-a|arm-b|snapshot) ;; *) echo "unsupported PHASE=${PHASE}" >&2; exit 64 ;; esac'
+                - KUBECTL_VERSION=v1.36.3
+                - curl -fsSLo /tmp/kubectl "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+                - curl -fsSLo /tmp/kubectl.sha256 "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl.sha256"
+                - 'echo "$(cat /tmp/kubectl.sha256)  /tmp/kubectl" | sha256sum -c -'
+                - install -m 0755 /tmp/kubectl /usr/local/bin/kubectl
+                - kubectl version --client -o yaml
+            pre_build:
+              commands:
+                - set -Eeuo pipefail
+                - git clone --filter=blob:none --no-checkout "${REPOSITORY_URL}" repo
+                - git -C repo fetch --depth 1 origin "${REPO_SHA}"
+                - git -C repo checkout --detach FETCH_HEAD
+                - 'test "$(git -C repo rev-parse HEAD)" = "${REPO_SHA}"'
+            build:
+              commands:
+                - set -Eeuo pipefail
+                - cd repo
+                - bash scripts/exp001/run.sh "${PHASE}"
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+          GroupName: !Ref ExperimentLogGroup
+          StreamName: exp001-runner
+        S3Logs:
+          Status: DISABLED
       Tags:
         - Key: Project
           Value: optimization-evidence
@@ -422,8 +496,10 @@ Outputs:
     Value: !GetAtt EksCluster.Arn
   NodeGroupName:
     Value: !Ref EksNodeGroup
-  GitHubExperimentRoleArn:
-    Value: !GetAtt GitHubExperimentRole.Arn
+  ExperimentRunnerProjectName:
+    Value: !Ref ExperimentRunnerProject
+  ExperimentRunnerRoleArn:
+    Value: !GetAtt CodeBuildExperimentRole.Arn
   PublicSubnetA:
     Value: !Ref PublicSubnetA
   PublicSubnetB:
