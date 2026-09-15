@@ -2,7 +2,9 @@
 
 ## Verified observations
 
-AWS account inspection found an existing `ai-lifecycle-eks` EKS 1.34 cluster in `us-east-1` with no active managed node group or Fargate profile. Its eksctl CloudFormation stack still contained an EKS control plane, VPC, NAT Gateway, Elastic IP, subnets, route tables, security groups, and IAM role. Cleanup was explicitly authorized because the environment was no longer needed; deletion was initiated to stop idle control-plane/NAT cost.
+AWS account inspection found an existing `ai-lifecycle-eks` EKS 1.34 cluster in `us-east-1` with no active managed node group or Fargate profile. Its eksctl CloudFormation stack still contained an EKS control plane, VPC, NAT Gateway, Elastic IP, subnets, route tables, security groups, and IAM role. Cleanup was explicitly authorized because the environment was no longer needed.
+
+Cleanup is now complete: the nodegroup stack no longer exists, the cluster stack no longer exists, `DescribeCluster` returns `ResourceNotFoundException`, and the former NAT Gateway `nat-0f29a9d8e00385b7c` reports `deleted`.
 
 No existing AWS Budget or legacy CUR report definition was present before this work. Cost Explorer API access was not enabled for the calling identity/account configuration.
 
@@ -31,7 +33,9 @@ This failure is intentionally documented because reproducibility includes reject
 
 Created `optimization-evidence-exp-001` with a USD 20 monthly limit. Credits and refunds are excluded from the budget calculation so promotional credits do not hide gross experimental consumption.
 
-At verification time AWS Budgets reported the budget `HEALTHY` and current calculated actual spend `0.0 USD`. This is the budget service's current value, not a claim that the account has never incurred cost.
+AWS Budgets reports the budget `HEALTHY`. Three ACTUAL-cost notifications are configured at 50%, 80%, and 100%, all currently `OK`, with delivery to the project owner's email address.
+
+At verification time AWS Budgets reported current calculated actual spend `0.0 USD`. This is the budget service's current value, not a claim that the account has never incurred cost.
 
 ## Promotional-credit balance
 
