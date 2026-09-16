@@ -162,8 +162,19 @@ validate_two_node_distribution() {
   [[ "${host_count}" -eq 2 ]] || { echo "expected app pods across 2 worker nodes, observed ${host_count}" >&2; return 1; }
 }
 
+preflight_manifests() {
+  local manifest
+  for manifest in \
+    infra/k8s/exp001/workload-baseline.yaml \
+    infra/k8s/exp001/workload-optimized.yaml \
+    infra/k8s/exp001/cluster-autoscaler.yaml; do
+    kubectl apply --dry-run=server -f "${manifest}" >/dev/null
+  done
+}
+
 aws eks update-kubeconfig --region "${AWS_REGION}" --name "${CLUSTER_NAME}" >/dev/null
-kubectl auth can-i '*' '*' >/dev/null
+kubectl auth can-i '*' '*' --all-namespaces --quiet
+preflight_manifests
 
 case "${PHASE}" in
   baseline)
