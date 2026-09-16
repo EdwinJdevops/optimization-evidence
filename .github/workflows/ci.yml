@@ -22,3 +22,24 @@ jobs:
       - run: ruff check .
       - run: mypy src
       - run: pytest -q
+      - name: Validate shell syntax
+        run: bash -n scripts/exp001/run.sh
+      - name: Shellcheck experiment runner
+        run: shellcheck scripts/exp001/run.sh
+      - name: Parse Kubernetes YAML
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import yaml
+
+          paths = sorted(Path("infra/k8s/exp001").glob("*.yaml"))
+          assert paths, "no EXP-001 Kubernetes manifests found"
+          for path in paths:
+              docs = list(yaml.safe_load_all(path.read_text()))
+              assert docs, f"{path}: no YAML documents"
+              for index, doc in enumerate(docs, start=1):
+                  assert isinstance(doc, dict), f"{path} document {index}: expected mapping"
+                  assert doc.get("apiVersion"), f"{path} document {index}: missing apiVersion"
+                  assert doc.get("kind"), f"{path} document {index}: missing kind"
+          print(f"validated {len(paths)} manifest files")
+          PY
