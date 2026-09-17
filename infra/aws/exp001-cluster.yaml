@@ -15,9 +15,9 @@ Parameters:
       - '1.36'
   NodeInstanceType:
     Type: String
-    Default: t3.medium
+    Default: c7i-flex.large
     AllowedValues:
-      - t3.medium
+      - c7i-flex.large
   NodeDiskSizeGiB:
     Type: Number
     Default: 20
