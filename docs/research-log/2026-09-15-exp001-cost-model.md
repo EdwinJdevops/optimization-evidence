@@ -1,5 +1,7 @@
 # 2026-09-15 EXP-001 AWS cost model
 
+Updated 2026-09-17 after the first live deployment exposed an account-level EC2 launch restriction.
+
 This document separates verified price observations from calculated experiment forecasts. It is not a cloud-bill claim.
 
 ## Verified observations
@@ -8,14 +10,27 @@ Region: `us-east-1`.
 
 AWS EKS currently reports Kubernetes `1.36` as the default EKS version and in `STANDARD_SUPPORT`. AWS documentation prices a cluster running a Kubernetes version in standard support at **USD 0.10 per cluster-hour**.
 
-AWS Price List API results for Linux, shared-tenancy, On-Demand EC2 in US East (N. Virginia):
+The first deployment attempted `t3.medium` because it preserved a simple 2-vCPU/4-GiB x86_64 worker shape. Auto Scaling rejected every launch with `InvalidParameterCombination` because this account only permits Free Tier eligible instance types. The experiment was stopped rather than substituting an unreviewed type at runtime.
+
+A fresh EC2 `DescribeInstanceTypes` query using `free-tier-eligible=true` returned the following eligible types in this account:
+
+| Instance | vCPU | Memory | Architecture |
+| --- | ---: | ---: | --- |
+| t3.micro | 2 | 1 GiB | x86_64 |
+| t4g.micro | 2 | 1 GiB | arm64 |
+| t3.small | 2 | 2 GiB | x86_64 |
+| t4g.small | 2 | 2 GiB | arm64 |
+| c7i-flex.large | 2 | 4 GiB | x86_64 |
+| m7i-flex.large | 2 | 8 GiB | x86_64 |
+
+AWS Price List API results for Linux, shared-tenancy, On-Demand EC2 in US East (N. Virginia) verified:
 
 | Instance | vCPU | Memory | Architecture | Price/hour |
 | --- | ---: | ---: | --- | ---: |
 | t3.small | 2 | 2 GiB | x86_64 | USD 0.0208 |
-| t3.medium | 2 | 4 GiB | x86_64 | USD 0.0416 |
-| t4g.small | 2 | 2 GiB | arm64 | USD 0.0168 |
-| t4g.medium | 2 | 4 GiB | arm64 | USD 0.0336 |
+| c7i-flex.large | 2 | 4 GiB | x86_64 | USD 0.08479 |
+
+The corrected experiment uses `c7i-flex.large`. It is the smallest eligible x86_64 option in the returned set that preserves the intended 4-GiB worker-memory envelope. This avoids turning memory pressure into the experimental variable. `m7i-flex.large` would double worker memory unnecessarily; `t3.small` halves it; `t4g.*` adds an ARM64 architecture variable.
 
 AWS Price List API results for gp3 in US East (N. Virginia): **USD 0.08 per GB-month** for storage before any chargeable IOPS or throughput above the gp3 included baseline.
 
@@ -28,8 +43,8 @@ The account's EKS service quota currently permits 100 clusters and 30 managed no
 ## Selected lab shape
 
 - 1 EKS 1.36 control plane
-- 2 x `t3.medium` while establishing the baseline
-- 1 x `t3.medium` after successful capacity realization
+- 2 x `c7i-flex.large` while establishing the baseline
+- 1 x `c7i-flex.large` after successful capacity realization
 - 20 GiB gp3 per worker
 - 1 public IPv4 per worker
 - no NAT Gateway
@@ -50,30 +65,30 @@ For hourly forecasting, monthly gp3 storage is normalized using 730 hours/month:
 Two-worker baseline:
 
 ```text
-EKS control plane         0.10000000
-2 x t3.medium             0.08320000
-2 x 20 GiB gp3            0.00438356
-2 x public IPv4           0.01000000
-------------------------------------
-forecast                  0.19758356 USD/hour
+EKS control plane          0.10000000
+2 x c7i-flex.large         0.16958000
+2 x 20 GiB gp3             0.00438356
+2 x public IPv4            0.01000000
+-------------------------------------
+forecast                   0.28396356 USD/hour
 ```
 
-One-worker realized-capacity state:
+One-worker capacity-realized state:
 
 ```text
-EKS control plane         0.10000000
-1 x t3.medium             0.04160000
-1 x 20 GiB gp3            0.00219178
-1 x public IPv4           0.00500000
-------------------------------------
-forecast                  0.14879178 USD/hour
+EKS control plane          0.10000000
+1 x c7i-flex.large         0.08479000
+1 x 20 GiB gp3             0.00219178
+1 x public IPv4            0.00500000
+-------------------------------------
+forecast                   0.19198178 USD/hour
 ```
 
 Forecast worker-removal delta:
 
 ```text
-0.19758356 - 0.14879178
-= 0.04879178 USD/hour
+0.28396356 - 0.19198178
+= 0.09198178 USD/hour
 ```
 
 That delta is only a **forecast**. EXP-001 must not call it realized savings. The billable result is evaluated later from CUR 2.0 resource-level records and must survive the attribution rules in the evidence state machine.
@@ -94,13 +109,13 @@ CodeBuild is intentionally kept outside the worker-capacity savings calculation.
 
 ## Time envelope
 
-If the lab accidentally stayed in the two-worker baseline state for the entire period, the modeled core infrastructure exposure would be approximately:
+If the corrected lab accidentally stayed in the two-worker baseline state for the entire period, the modeled core infrastructure exposure would be approximately:
 
 | Elapsed time | Core forecast |
 | ---: | ---: |
-| 6 hours | USD 1.19 |
-| 12 hours | USD 2.37 |
-| 24 hours | USD 4.74 |
+| 6 hours | USD 1.70 |
+| 12 hours | USD 3.41 |
+| 24 hours | USD 6.82 |
 
 These figures exclude CodeBuild phase minutes, variable data transfer, container-registry traffic, possible CloudWatch usage, taxes, and any service pricing not listed above. They are therefore planning bounds for the known continuously running core resources, not invoices.
 
@@ -118,6 +133,7 @@ Hard engineering behavior:
 4. Do not leave the EKS experiment stack running for convenience after the operational evidence is captured.
 5. If the experiment cannot identify the exact managed node group, EC2 instance IDs, timestamps, and mutation cause, stop rather than collect ambiguous evidence.
 6. Delete the experiment stack after Kubernetes/EC2/Auto Scaling evidence is persisted. Keep the separate billing-foundation stack so delayed CUR 2.0 records can be correlated later.
+7. Never silently substitute an instance type after a launch failure. Change the source-of-truth, re-run CI/preflight, create a new reviewed change set, and only then redeploy.
 
 ## Claim boundary
 
