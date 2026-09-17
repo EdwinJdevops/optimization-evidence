@@ -2,6 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-09-15
+- Updated: 2026-09-17
 
 ## Context
 
@@ -9,12 +10,14 @@ EXP-001 must distinguish an optimization that only reduces Kubernetes requests f
 
 The experiment is evidence collection, not a benchmark of autoscaler sophistication. The infrastructure should minimize cost and confounders while remaining representative of a managed Kubernetes production primitive.
 
+The first live deployment on 2026-09-17 exposed an account-specific constraint that was not visible in the pricing-only preflight: the account rejected `t3.medium` launches because that instance type is not eligible for the account's Free Tier launch policy. No worker instance launched. The deployment was stopped and the experiment stack was deleted rather than weakening the experiment or bypassing the account restriction.
+
 ## Decision
 
 Use one short-lived Amazon EKS cluster in `us-east-1` with the following fixed baseline:
 
 - Kubernetes `1.36`, which AWS currently reports as the default EKS version and in standard support.
-- One EKS managed node group using `t3.medium`, On-Demand capacity, 20 GiB gp3 root volumes, minimum 1, desired 2, maximum 2.
+- One EKS managed node group using `c7i-flex.large`, On-Demand capacity, 20 GiB gp3 root volumes, minimum 1, desired 2, maximum 2.
 - Two public subnets in separate Availability Zones, an Internet Gateway, and no NAT Gateway.
 - Public and private EKS API endpoints enabled. The public endpoint exists so an ephemeral AWS CodeBuild experiment runner can authenticate without introducing a NAT Gateway or a persistent bastion. Kubernetes authentication still gates access.
 - No EC2 SSH key and no EKS node-group remote access configuration.
@@ -32,16 +35,28 @@ All experiment resources carry:
 - `Experiment=EXP-001`
 - `Environment=research`
 
-## Why `t3.medium`
+## Why `c7i-flex.large`
 
-Verified current us-east-1 Linux On-Demand prices are:
+The instance type is constrained by the actual account, not chosen from a theoretical catalog alone.
 
-- `t3.small`: USD 0.0208/hour, 2 vCPU, 2 GiB RAM
-- `t3.medium`: USD 0.0416/hour, 2 vCPU, 4 GiB RAM
-- `t4g.small`: USD 0.0168/hour, 2 vCPU, 2 GiB RAM
-- `t4g.medium`: USD 0.0336/hour, 2 vCPU, 4 GiB RAM
+During the first deployment, Auto Scaling repeatedly returned:
 
-`t3.small` is cheaper, but 2 GiB is unnecessarily tight for EKS system workloads, the autoscaler, and experiment telemetry. Memory pressure would become a confounder. `t4g.medium` is cheaper than `t3.medium`, but ARM64 would add image-architecture compatibility to an experiment whose causal variable is capacity realization. The approximately USD 0.008/hour/node difference is not worth that extra variable for a short-lived lab.
+`InvalidParameterCombination - The specified instance type is not eligible for Free Tier.`
+
+A fresh `DescribeInstanceTypes` query with `free-tier-eligible=true` in `us-east-1` returned exactly these eligible types for this account at the time of the incident:
+
+- `t3.micro`: 2 vCPU, 1 GiB, x86_64
+- `t4g.micro`: 2 vCPU, 1 GiB, arm64
+- `t3.small`: 2 vCPU, 2 GiB, x86_64
+- `t4g.small`: 2 vCPU, 2 GiB, arm64
+- `c7i-flex.large`: 2 vCPU, 4 GiB, x86_64
+- `m7i-flex.large`: 2 vCPU, 8 GiB, x86_64
+
+`c7i-flex.large` is selected because it preserves the original 2-vCPU/4-GiB x86_64 experiment shape while satisfying the account's launch eligibility constraint. AWS Price List data verified a Linux On-Demand rate of USD 0.08479/hour in `us-east-1` at the time of the correction.
+
+`t3.small` is materially cheaper but halves worker memory to 2 GiB and would make kube-system pressure a new causal variable. `t4g.*` introduces ARM64 image architecture. `m7i-flex.large` doubles memory to 8 GiB and increases the amount of unused headroom. `t3.micro` and `t4g.micro` are too small for a controlled two-node EKS experiment with system workloads and the autoscaler.
+
+This choice is specific to this controlled account and experiment. It is not a general recommendation to run production EKS worker groups on `c7i-flex.large`.
 
 ## Why On-Demand
 
@@ -52,6 +67,13 @@ Spot is rejected for EXP-001. A Spot interruption could remove a node independen
 Karpenter is a strong production option, but EXP-001 only needs one managed node group to move from desired capacity 2 to 1. Karpenter introduces instance selection, provisioning policy, EC2 Fleet behavior, and an additional execution model. Those are useful in later experiments, but they weaken the causal isolation of EXP-001.
 
 Cluster Autoscaler directly changes the desired capacity of the known managed node group, which gives us a narrow mutation surface and a simple chain of evidence.
+
+The failed first deployment also verified a critical prerequisite before any worker existed: EKS created the managed-node-group Auto Scaling Group with both discovery tags expected by the autoscaler IAM condition:
+
+- `k8s.io/cluster-autoscaler/enabled=true`
+- `k8s.io/cluster-autoscaler/optimization-evidence-exp001=owned`
+
+That verified assumption is retained for the corrected deployment, but it will still be rechecked at runtime before Arm B.
 
 ## Why CodeBuild instead of a persistent runner or GitHub-hosted runner
 
@@ -77,8 +99,11 @@ A Kubernetes-success signal alone is never sufficient for `REALIZED`.
 
 ## Rejected alternatives
 
-- `t3.small`: lower price, higher memory-pressure risk.
-- `t4g.*`: lower price, but ARM64 is an unnecessary experiment variable.
+- `t3.medium`: original choice, but this account rejected it as not Free Tier eligible.
+- `t3.small`: eligible and lower priced, but 2 GiB creates unnecessary memory-pressure risk.
+- `t3.micro`: 1 GiB is too tight for this controlled EKS workload.
+- `t4g.*`: eligible and lower priced, but ARM64 is an unnecessary experiment variable.
+- `m7i-flex.large`: eligible but 8 GiB creates unnecessary excess headroom for this experiment.
 - Spot capacity: interruption is an attribution confounder.
 - Karpenter: wider decision surface than EXP-001 requires.
 - EKS Auto Mode: adds a separately priced management mechanism and changes the capacity-control path.
@@ -93,4 +118,4 @@ The lab is not a recommendation for every production EKS architecture. Public wo
 
 The public EKS endpoint is not treated as sufficient authorization; EKS authentication and the access entry remain required. The runner and autoscaler have separate roles so orchestration and capacity mutation do not share the same AWS permissions.
 
-The experiment must be torn down immediately after operational evidence is captured. Billing evidence can arrive later because the CUR 2.0 export is maintained by the separate retained billing-foundation stack.
+The corrected worker rate is higher than the original `t3.medium` forecast, but the lab is deliberately short-lived and remains below the USD 20 monthly alert guardrail when operated as designed. The experiment must be torn down immediately after operational evidence is captured. Billing evidence can arrive later because the CUR 2.0 export is maintained by the separate retained billing-foundation stack.
