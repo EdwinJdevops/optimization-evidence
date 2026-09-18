@@ -31,11 +31,13 @@ This failure is intentionally documented because reproducibility includes reject
 
 ## Budget
 
-Created `optimization-evidence-exp-001` with a USD 20 monthly limit. Credits and refunds are excluded from the budget calculation so promotional credits do not hide gross experimental consumption.
+Created `optimization-evidence-exp-001` as an account-wide gross-spend guardrail. Credits and refunds are excluded from the budget calculation so promotional credits do not hide gross consumption.
 
-AWS Budgets reports the budget `HEALTHY`. Three ACTUAL-cost notifications are configured at 50%, 80%, and 100%, all currently `OK`, with delivery to the project owner's email address.
+On 2026-09-18, before any EXP-001 workload phase ran, AWS Budgets reported monthly calculated actual spend of `52.851 USD`. The budget had no cost filters, so that value is account-wide and cannot be attributed to EXP-001. Because the original USD 20 ceiling was already breached, the EXP-001 runbook stop condition fired and the freshly created lab stack was immediately deleted before baseline execution.
 
-At verification time AWS Budgets reported current calculated actual spend `0.0 USD`. This is the budget service's current value, not a claim that the account has never incurred cost.
+The monthly ceiling was then rebased to `70 USD`, preserving approximately `17.149 USD` of gross-spend headroom from the observed account baseline. ACTUAL-cost notification thresholds are now 80%, 90%, and 100%; all were verified `OK` immediately after the update.
+
+This budget is an alerting guardrail, not a hard cap and not an experiment cost meter. EXP-001 cost attribution is performed later from CUR 2.0 resource-level records and experiment timestamps.
 
 ## Promotional-credit balance
 
