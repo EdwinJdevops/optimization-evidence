@@ -348,6 +348,11 @@ Resources:
                 Resource:
                   - !GetAtt EksCluster.Arn
                   - !Sub 'arn:${AWS::Partition}:eks:${AWS::Region}:${AWS::AccountId}:nodegroup/${ClusterName}/*/*'
+              - Sid: ReadBudgetGuardrail
+                Effect: Allow
+                Action:
+                  - budgets:ViewBudget
+                Resource: '*'
               - Sid: ReadExperimentEc2AndAutoscalingState
                 Effect: Allow
                 Action:
@@ -446,6 +451,12 @@ Resources:
           - Name: PHASE
             Type: PLAINTEXT
             Value: snapshot
+          - Name: BUDGET_NAME
+            Type: PLAINTEXT
+            Value: optimization-evidence-exp-001
+          - Name: BUDGET_MIN_HEADROOM_USD
+            Type: PLAINTEXT
+            Value: '5'
       Source:
         Type: NO_SOURCE
         BuildSpec: |

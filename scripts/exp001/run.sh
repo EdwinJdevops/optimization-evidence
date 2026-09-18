@@ -7,6 +7,8 @@ NODEGROUP_NAME="${NODEGROUP_NAME:-optimization-evidence-exp001-workers}"
 EVIDENCE_BUCKET="${EVIDENCE_BUCKET:?EVIDENCE_BUCKET is required}"
 REPO_SHA="${REPO_SHA:?REPO_SHA is required}"
 AWS_REGION="${AWS_REGION:-us-east-1}"
+BUDGET_NAME="${BUDGET_NAME:-optimization-evidence-exp-001}"
+BUDGET_MIN_HEADROOM_USD="${BUDGET_MIN_HEADROOM_USD:-5}"
 RUN_ID_RAW="${CODEBUILD_BUILD_ID:-local-$(date -u +%Y%m%dT%H%M%SZ)}"
 RUN_ID="${RUN_ID_RAW//[:\/]/-}"
 EVIDENCE_ROOT="/tmp/optimization-evidence/${RUN_ID}/${PHASE:-unknown}"
@@ -18,6 +20,60 @@ case "${PHASE}" in
 esac
 
 mkdir -p "${EVIDENCE_ROOT}"
+
+
+budget_preflight() {
+  local account_id budget_file
+  account_id="$(aws sts get-caller-identity --query Account --output text)"
+  budget_file="${EVIDENCE_ROOT}/budget-preflight.json"
+
+  aws budgets describe-budget \
+    --region "${AWS_REGION}" \
+    --account-id "${account_id}" \
+    --budget-name "${BUDGET_NAME}" \
+    --output json > "${budget_file}"
+
+  python3 - "${budget_file}" "${BUDGET_MIN_HEADROOM_USD}" <<'PY'
+import json
+import sys
+from decimal import Decimal, InvalidOperation
+
+budget_file, minimum_headroom_raw = sys.argv[1], sys.argv[2]
+with open(budget_file, encoding="utf-8") as handle:
+    payload = json.load(handle)
+
+budget = payload["Budget"]
+health = budget.get("HealthStatus", {}).get("Status")
+actual_raw = budget.get("CalculatedSpend", {}).get("ActualSpend", {}).get("Amount")
+limit_raw = budget.get("BudgetLimit", {}).get("Amount")
+
+try:
+    actual = Decimal(str(actual_raw))
+    limit = Decimal(str(limit_raw))
+    minimum_headroom = Decimal(str(minimum_headroom_raw))
+except (InvalidOperation, TypeError) as exc:
+    raise SystemExit(f"invalid budget numeric value: {exc}") from exc
+
+headroom = limit - actual
+print(
+    f"budget_preflight health={health} actual_usd={actual} "
+    f"limit_usd={limit} headroom_usd={headroom} "
+    f"minimum_headroom_usd={minimum_headroom}"
+)
+
+if health != "HEALTHY":
+    raise SystemExit(f"budget health must be HEALTHY, observed {health!r}")
+if actual >= limit:
+    raise SystemExit(
+        f"budget ceiling breached: actual_usd={actual} limit_usd={limit}"
+    )
+if headroom < minimum_headroom:
+    raise SystemExit(
+        "insufficient budget headroom: "
+        f"headroom_usd={headroom} minimum_usd={minimum_headroom}"
+    )
+PY
+}
 
 ready_node_count() {
   kubectl get nodes --no-headers 2>/dev/null | awk '$2 == "Ready" {n++} END {print n+0}'
@@ -171,6 +227,10 @@ preflight_manifests() {
     kubectl apply --dry-run=server -f "${manifest}" >/dev/null
   done
 }
+
+if [[ "${PHASE}" != "snapshot" ]]; then
+  budget_preflight
+fi
 
 aws eks update-kubeconfig --region "${AWS_REGION}" --name "${CLUSTER_NAME}" >/dev/null
 kubectl auth can-i '*' '*' --all-namespaces --quiet
