@@ -119,7 +119,13 @@ If the corrected lab accidentally stayed in the two-worker baseline state for th
 
 These figures exclude CodeBuild phase minutes, variable data transfer, container-registry traffic, possible CloudWatch usage, taxes, and any service pricing not listed above. They are therefore planning bounds for the known continuously running core resources, not invoices.
 
-The separate AWS Budget `optimization-evidence-exp-001` remains a **USD 20 monthly alert guardrail**, not an allowed burn target and not an automatic shutdown mechanism. ACTUAL-cost notifications are configured at 50%, 80%, and 100%.
+The AWS Budget `optimization-evidence-exp-001` is an **account-wide gross-spend alert guardrail**, not an allowed burn target, not a hard shutdown mechanism, and not EXP-001 cost attribution.
+
+On 2026-09-18, before baseline, AWS Budgets reported monthly actual spend of USD 52.851 with no cost filters. The original USD 20 ceiling was therefore already breached by account-wide gross spend before any workload phase ran. The run was stopped and the lab was deleted.
+
+The ceiling was rebased to **USD 70**, leaving approximately **USD 17.149** of gross-spend headroom from that observed baseline. ACTUAL-cost notifications are configured at 80%, 90%, and 100%. Before baseline and before every later phase, execution requires at least **USD 5.00** of remaining headroom.
+
+The budget value must never be presented as EXP-001 spend. Resource-level CUR 2.0 records and experiment timestamps are the billing evidence used for attribution.
 
 ## Spend policy for EXP-001
 
@@ -134,6 +140,8 @@ Hard engineering behavior:
 5. If the experiment cannot identify the exact managed node group, EC2 instance IDs, timestamps, and mutation cause, stop rather than collect ambiguous evidence.
 6. Delete the experiment stack after Kubernetes/EC2/Auto Scaling evidence is persisted. Keep the separate billing-foundation stack so delayed CUR 2.0 records can be correlated later.
 7. Never silently substitute an instance type after a launch failure. Change the source-of-truth, re-run CI/preflight, create a new reviewed change set, and only then redeploy.
+8. Before baseline and before every subsequent phase, verify the account-wide budget is healthy, below its ceiling, and has at least USD 5.00 of remaining gross-spend headroom.
+9. If a budget gate fails, delete the experiment stack before changing the guardrail; do not raise a live-run ceiling merely to keep already-running infrastructure alive.
 
 ## Claim boundary
 

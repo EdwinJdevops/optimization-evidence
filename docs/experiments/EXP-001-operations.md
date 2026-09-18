@@ -10,6 +10,8 @@ This runbook is the execution contract for the first controlled optimization exp
 4. Verify stack status, EKS control plane, managed node group, CodeBuild project, IAM roles, Pod Identity association, log group, VPC routes, and absence of NAT gateways.
 5. Inspect the managed node group Auto Scaling Group. Record its name, desired/min/max capacity, instances, and Cluster Autoscaler discovery tags.
 6. If required discovery tags are absent, stop. Do not run Arm B until tags and IAM conditions are aligned and re-reviewed.
+7. Read the account-wide AWS Budget immediately before baseline. Require budget health `HEALTHY`, current actual spend below the configured ceiling, and at least USD 5.00 of gross-spend headroom. If not, stop and tear down before running any workload phase.
+8. Treat the account budget only as a gross-spend safety guardrail. It is not EXP-001 attribution evidence because it has no project cost filter.
 
 ## Phase order
 
@@ -58,7 +60,7 @@ Stop immediately and preserve evidence if any of the following occurs:
 - node group capacity changes during Arm A;
 - evidence upload fails;
 - any unexpected paid resource appears outside the documented lab topology;
-- AWS budget guardrail is breached.
+- the AWS budget ceiling is breached or remaining gross-spend headroom is below USD 5.00.
 
 ## Teardown
 
