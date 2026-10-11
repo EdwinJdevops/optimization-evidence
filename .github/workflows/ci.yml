@@ -43,3 +43,19 @@ jobs:
                   assert doc.get("kind"), f"{path} document {index}: missing kind"
           print(f"validated {len(paths)} manifest files")
           PY
+
+      - name: Validate CodeBuild shell contract
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          text = Path("infra/aws/exp001-cluster.yaml").read_text()
+          pattern = re.compile(
+              r"BuildSpec:\s*\|\n"
+              r"\s+version:\s*0\.2\n"
+              r"\s+env:\n"
+              r"\s+shell:\s+bash\n"
+          )
+          assert pattern.search(text), "EXP-001 CodeBuild buildspec must explicitly use bash"
+          PY
