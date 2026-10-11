@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: optimization-evidence
+  labels:
+    app.kubernetes.io/part-of: optimization-evidence
+    experiment: exp001
