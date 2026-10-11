@@ -16,6 +16,7 @@ metadata:
     optimization-evidence/experiment: EXP-001
 spec:
   replicas: 4
+  minReadySeconds: 5
   strategy:
     type: RollingUpdate
     rollingUpdate:
@@ -31,6 +32,7 @@ spec:
         optimization-evidence/experiment: EXP-001
         optimization-evidence/arm: optimized
     spec:
+      terminationGracePeriodSeconds: 30
       topologySpreadConstraints:
         - maxSkew: 1
           topologyKey: kubernetes.io/hostname
@@ -58,6 +60,13 @@ spec:
             periodSeconds: 10
             timeoutSeconds: 2
             failureThreshold: 3
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - /bin/sh
+                  - -c
+                  - sleep 10
           resources:
             requests:
               cpu: 300m
