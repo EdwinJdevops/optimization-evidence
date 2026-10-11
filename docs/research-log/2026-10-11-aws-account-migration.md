@@ -46,3 +46,36 @@ Historical repository records remain valid as engineering-history records. Finan
 ## Claim boundary
 
 This migration preserves project continuity, but it does not preserve cloud-resource identity or billing continuity. EXP-001 must be executed again from baseline in the replacement account before any experiment outcome is classified.
+
+
+## Replacement-account foundation deployment
+
+After the preflight, the replacement account was bootstrapped from the existing reviewed repository rather than reconstructed manually.
+
+A new monthly AWS Budget named `optimization-evidence-exp-001` was created at **USD 20**. Credits and refunds are excluded from its calculation. Immediately after creation AWS Budgets reported:
+
+- health: `HEALTHY`;
+- calculated actual spend: `0.0 USD`;
+- monthly ceiling: `20.0 USD`.
+
+The budget currently exists as the runtime stop-condition source. No email subscriber was inferred or invented during migration.
+
+The existing repository template `infra/aws/billing-foundation.yaml` was validated by CloudFormation in the replacement account. A reviewed create change set contained exactly three additions:
+
+- `AWS::S3::Bucket`;
+- `AWS::S3::BucketPolicy`;
+- `AWS::BCMDataExports::Export`.
+
+The change set was executed and the stack reached `CREATE_COMPLETE`.
+
+Read-after-write verification confirmed:
+
+- all S3 public-access blocks enabled;
+- bucket-owner-enforced object ownership;
+- AES-256 default encryption;
+- 180-day evidence expiration;
+- 7-day incomplete multipart-upload cleanup;
+- CUR 2.0 Data Export present and `HEALTHY`;
+- only the AWS programmatic-access test object present immediately after creation, so no actual CUR delivery had arrived yet.
+
+The evidence bucket physical name and account identifiers are intentionally omitted from this public research log.
