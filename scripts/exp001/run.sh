@@ -13,6 +13,7 @@ RUN_ID_RAW="${CODEBUILD_BUILD_ID:-local-$(date -u +%Y%m%dT%H%M%SZ)}"
 RUN_ID="${RUN_ID_RAW//[:\/]/-}"
 EVIDENCE_ROOT="/tmp/optimization-evidence/${RUN_ID}/${PHASE:-unknown}"
 SNAPSHOT_WRITTEN=0
+PHASE_WINDOW_START=""
 
 case "${PHASE}" in
   baseline|arm-a|arm-b|snapshot) ;;
@@ -124,7 +125,13 @@ EOF
   kubectl get pods -n optimization-evidence -o json > "${EVIDENCE_ROOT}/workload-pods.json" 2>&1 || true
   kubectl get deployments -A -o yaml > "${EVIDENCE_ROOT}/deployments.yaml" 2>&1 || true
   kubectl get events -A --sort-by=.lastTimestamp > "${EVIDENCE_ROOT}/events.txt" 2>&1 || true
-  kubectl logs -n optimization-evidence deployment/exp001-loadgen --tail=-1 > "${EVIDENCE_ROOT}/loadgen.log" 2>&1 || true
+  kubectl logs -n optimization-evidence deployment/exp001-loadgen --tail=-1 > "${EVIDENCE_ROOT}/loadgen-full.log" 2>&1 || true
+  if [[ -n "${PHASE_WINDOW_START}" ]]; then
+    kubectl logs -n optimization-evidence deployment/exp001-loadgen \
+      --since-time="${PHASE_WINDOW_START}" --tail=-1 > "${EVIDENCE_ROOT}/loadgen-window.log" 2>&1 || true
+  else
+    cp "${EVIDENCE_ROOT}/loadgen-full.log" "${EVIDENCE_ROOT}/loadgen-window.log" 2>/dev/null || true
+  fi
   kubectl logs -n kube-system deployment/cluster-autoscaler --tail=-1 > "${EVIDENCE_ROOT}/cluster-autoscaler.log" 2>&1 || true
 
   aws eks describe-cluster \
@@ -156,12 +163,13 @@ EOF
     fi
   fi
 
-  if [[ -f "${EVIDENCE_ROOT}/loadgen.log" ]]; then
+  if [[ -f "${EVIDENCE_ROOT}/loadgen-window.log" ]]; then
     {
+      printf 'window_start=%s\n' "${PHASE_WINDOW_START:-unknown}"
       printf 'ok_count='
-      grep -c 'status=ok' "${EVIDENCE_ROOT}/loadgen.log" || true
+      grep -c 'status=ok' "${EVIDENCE_ROOT}/loadgen-window.log" || true
       printf 'fail_count='
-      grep -c 'status=fail' "${EVIDENCE_ROOT}/loadgen.log" || true
+      grep -c 'status=fail' "${EVIDENCE_ROOT}/loadgen-window.log" || true
     } > "${EVIDENCE_ROOT}/loadgen-summary.txt"
   fi
 
@@ -218,6 +226,31 @@ validate_two_node_distribution() {
   [[ "${host_count}" -eq 2 ]] || { echo "expected app pods across 2 worker nodes, observed ${host_count}" >&2; return 1; }
 }
 
+start_observation_window() {
+  PHASE_WINDOW_START="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+}
+
+assert_loadgen_window() {
+  local log_file ok_count fail_count
+  log_file="${EVIDENCE_ROOT}/loadgen-window-check.log"
+  [[ -n "${PHASE_WINDOW_START}" ]] || { echo "observation window was not started" >&2; return 1; }
+
+  kubectl logs -n optimization-evidence deployment/exp001-loadgen \
+    --since-time="${PHASE_WINDOW_START}" --tail=-1 > "${log_file}"
+
+  ok_count="$(grep -c 'status=ok' "${log_file}" || true)"
+  fail_count="$(grep -c 'status=fail' "${log_file}" || true)"
+
+  [[ "${ok_count}" -ge 60 ]] || {
+    echo "observation window has insufficient successful probes: ${ok_count}" >&2
+    return 1
+  }
+  [[ "${fail_count}" -eq 0 ]] || {
+    echo "observation window contains failed probes: ${fail_count}" >&2
+    return 1
+  }
+}
+
 ensure_namespace() {
   kubectl apply -f infra/k8s/exp001/namespace.yaml >/dev/null
 }
@@ -251,13 +284,16 @@ case "${PHASE}" in
     wait_for_ready_nodes 2 300
     wait_for_asg_desired 2 300
     validate_two_node_distribution
+    start_observation_window
     sleep 120
     [[ "$(ready_node_count)" -eq 2 ]]
+    assert_loadgen_window
     collect_evidence "baseline-stable"
     ;;
 
   arm-a)
     kubectl delete deployment cluster-autoscaler -n kube-system --ignore-not-found=true
+    start_observation_window
     kubectl apply -f infra/k8s/exp001/workload-optimized.yaml
     kubectl rollout status deployment/exp001-app -n optimization-evidence --timeout=5m
     kubectl rollout status deployment/exp001-loadgen -n optimization-evidence --timeout=3m
@@ -265,6 +301,7 @@ case "${PHASE}" in
     sleep 180
     [[ "$(ready_node_count)" -eq 2 ]] || { echo "Arm A lost worker capacity unexpectedly" >&2; exit 2; }
     [[ "$(asg_desired_capacity "$(nodegroup_asg)")" == "2" ]] || { echo "Arm A ASG desired capacity changed unexpectedly" >&2; exit 2; }
+    assert_loadgen_window
     collect_evidence "arm-a-no-capacity-change"
     ;;
 
@@ -274,6 +311,7 @@ case "${PHASE}" in
     kubectl rollout status deployment/exp001-loadgen -n optimization-evidence --timeout=3m
     wait_for_ready_nodes 2 300
     wait_for_asg_desired 2 300
+    start_observation_window
     kubectl apply -f infra/k8s/exp001/cluster-autoscaler.yaml
     kubectl rollout status deployment/cluster-autoscaler -n kube-system --timeout=5m
     wait_for_asg_desired 1 900
@@ -282,6 +320,7 @@ case "${PHASE}" in
     sleep 120
     [[ "$(ready_node_count)" -eq 1 ]]
     [[ "$(asg_desired_capacity "$(nodegroup_asg)")" == "1" ]]
+    assert_loadgen_window
     collect_evidence "arm-b-capacity-realized"
     ;;
 
